@@ -1,4 +1,4 @@
-package extendederr
+package extenderr
 
 import (
 	"fmt"
