@@ -1,13 +1,8 @@
 // package extenderr is an error utility aimed at application servers.
-// It's purpose is to help the outter most caller (main.go, middleware, or an http handler)
-// make decisions about how to handle an error, log useful info about the error, and communicate
-// accurate and helpful state to clients and human end users.
+// It's purpose is to supply the outter most caller (http handler, middleware, etc)
+// eith useful info about the error, and communicate accurate and helpful status to clients and human end users.
 //
-// The goal is that when an error is received it should be able to communicate:
-//
-//   - All wrapped errors in the "error chain", and their stack trace (ie. pkg/errors style errors)
-//   - What the root case of the error is. (wrapper interface)
-//   - If any errors in the chain have:
+// Gives errors additional annotations and retrivial of:
 //     - a description that is safe to expose to humans (humanMessage interface)
 //     - an enum error code that can be checked (errorCoder interface)
 //     - an HTTP status code that can be returned (httpStatuser interface)
@@ -18,7 +13,7 @@
 // in a similar way that this package implements "Error", "Format", Cause", and "Unwrap".
 //
 // This package is safe to use on any error (and nil), it will return "zero" values for any unused
-// fields, or any unimplimented interfaces.
+// fields, or any unimplimented interfaces when retrieving annotations.
 package extenderr
 
 import (
@@ -74,9 +69,9 @@ func WithHumanMessage(err error, message string) error {
 }
 
 
-// HumanMessage returns the first (outter most) message encountered in the 
-// error chain. The message is intended to be exposed to human, or empty string if no message exists in the error
-// chain. It returns the first (outter most) message encountered.
+// HumanMessage returns the first (outter most) message encountered in the error chain.
+// The message is intended to be exposed to human. If not message exists or the error is nil
+// it returns empty string.
 func HumanMessage(errToWalk error) string {
 	message := ""
 	if errToWalk == nil {
@@ -188,9 +183,7 @@ func WithHttpStatus(err error, status int) error {
 	}
 }
 
-// HttpStatus returns the first (outter most) error code encountered in the error chain.
-// An int enum error code is intended for signaling a specific error state to clients
-// of an API.
+// HttpStatus returns the first (outter most) http status code encountered in the error chain.
 func HttpStatus(errToWalk error) int {
 	status := 0
 	if errToWalk == nil {
@@ -256,9 +249,9 @@ func Tags(errToWalk error) []interface{} {
 	return allTags
 }
 
-// TagMap will return a map of all tags in the error chain
-// this is a best effort, unblanced key pairs will be made even,
-// and duplicate tags overwritten (inner most tag wins)
+// TagMap will return a map of all tags in the error chain.
+// This is a best effort, unblanced key pairs will be made even,
+// and duplicate tags overwritten (the inner most tag wins).
 func TagMap(errToWalk error) map[interface{}]interface{} {
 	allTags := map[interface{}]interface{}{}
 	walkErrorChain(errToWalk, func(err error) bool {
