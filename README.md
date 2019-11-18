@@ -1,7 +1,7 @@
+[![Documentation](https://godoc.org/github.com/alexhornbake/extenderr?status.svg)](http://godoc.org/github.com/alexhornbake/extenderr)
+
 # extenderr
 extend/wrap errors with: tags, error codes, http status, and human message. Plays nice with pkg/errors and go1.13 Unwrap.
-
-While returning something like http status from deep inside the call stack is probably not the best idea, there is a middleground where common helpers like middle
 
 ```
 // Example:
