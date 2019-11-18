@@ -22,5 +22,5 @@ logger.Error(err.Error(), extenderr.Tags())
 
 // If you are using pkg/errors, then the stack trace is still available:
 stackTrace := fmt.Sprintf("%+v", err)
-}
+
 ```
