@@ -1,107 +1,254 @@
+// package extenderr is an error utility aimed at application servers.
+// It's purpose is to help the outter most caller (main.go, middleware, or an http handler)
+// make decisions about how to handle an error, log useful info about the error, and communicate
+// accurate and helpful state to clients and human end users.
+//
+// The goal is that when an error is received it should be able to communicate:
+//
+//   - All wrapped errors in the "error chain", and their stack trace (ie. pkg/errors style errors)
+//   - What the root case of the error is. (wrapper interface)
+//   - If any errors in the chain have:
+//     - a description that is safe to expose to humans (humanMessage interface)
+//     - an enum error code that can be checked (errorCoder interface)
+//     - an HTTP status code that can be returned (httpStatuser interface)
+//     - key/value pairs that have been attached (tagger interface)
+//
+// All of the interfaces are private, but considered stable, such that if your
+// use case deviates from this package, one should be able to implement the interface
+// in a similar way that this package implements "Error", "Format", Cause", and "Unwrap".
+//
+// This package is safe to use on any error (and nil), it will return "zero" values for any unused
+// fields, or any unimplimented interfaces.
 package extenderr
 
 import (
 	"fmt"
 	"io"
-
-	"github.com/pkg/errors"
 )
 
-// Name is an error name
-type Name string
+// wrapper is the go.13 errors interface for Unwrapping an error
+// This interface is used to walk the error chain when necessary.
+type wrapper interface {
+	Unwrap() error
+}
 
-// extended is an error that has a name, and key/value pairs attached to it.
-// Sentinel errors are frowned upon because they provide little extra detail.
-// extended errors have the same convienence, but implement the Cause/Unwrap
-// interface so that a named error can be inserted in to an error chain with
-// extra context added.
-type extended struct {
+/*
+
+ HumanMessage
+
+*/
+
+type humanMessage interface {
+	HumanMessage() string
+}
+
+type withHumanMessage struct{
 	error
-	name Name
-	keysAndValues []interface{}
+	message string
 }
 
-type tagged interface {
-	Tags() []interface{}
-}
+// CustomerMessage returns a description of the error that is intended to be
+// exposed to end users.
+func (e *withHumanMessage) HumanMessage() string { return e.message }
 
-// Name returns the name of the error
-func (e *extended) Name() Name { return e.name }
-
-// Tags returns the slice of keys and values attached to this error
-func (e *extended) Tags() []interface{} { return e.keysAndValues }
-
-// Cause returnd the cause of the error
-func (e *extended) Cause() error { return e.error }
-
-// Unwrap provides compatibility with go1.13 errors
-func (e * extended) Unwrap() error { return e.error}
+// Unwrap returns the error that is being wrapped
+func (e *withHumanMessage) Unwrap() error { return e.error}
 
 // Error implements the Error interface
-func (e *extended) Error() string {
-	return string(e.name) + ": " + e.Cause().Error()
+func (e *withHumanMessage) Error() string {
+	return e.message + ": " + e.Unwrap().Error()
 }
 
 // Format implements the Formatter interface
-func (e *extended) Format(s fmt.State, verb rune) {
-	switch verb {
-	case 'v':
-		if s.Flag('+') {
-			fmt.Fprintf(s, "%+v\n", e.Cause())
-		}
-		fallthrough
-	case 's', 'q':
-		io.WriteString(s, string(e.name))
-	}
-}
+func (e *withHumanMessage) Format(s fmt.State, verb rune) { format(e, s, verb) }
 
-// NewNamed creates a new error with a name that can be checked, and an optional
-// set of key/value tags attached
-func NewNamed(err error, name Name, keysAndValues ...interface{}) error {
-	return &extended{
+// WithHumanMessage wraps the error with a message intended for end users.
+func WithHumanMessage(err error, message string) error {
+	if err == nil {
+		return err
+	}
+	return &withHumanMessage{
 		error: err,
-		name: name,
-		keysAndValues: keysAndValues,
+		message: message,
 	}
 }
 
-// NewTags creates an unnamed error with a set of key/value tags attached.
-func NewTags(err error, keysAndValues ...interface{}) error {
-	return &extended{
-		error: err,
-		keysAndValues: keysAndValues,
-	}
-}
 
-// IsNamed returns true if this specific error has a name
-func IsNamed(err error, name Name) bool {
-	if namedErr, ok := err.(*extended); ok {
-		if namedErr.Name() == "" {
-			return false
+// HumanMessage returns the first (outter most) message encountered in the 
+// error chain. The message is intended to be exposed to human, or empty string if no message exists in the error
+// chain. It returns the first (outter most) message encountered.
+func HumanMessage(errToWalk error) string {
+	message := ""
+	if errToWalk == nil {
+		return message
+	}
+	walkErrorChain(errToWalk, func(err error) bool {
+		if m, ok := err.(humanMessage); ok {
+			message = m.HumanMessage()
 		}
-		return namedErr.Name() == name
-	}
-	return false
-}
-
-// IsAnyCauseNamed checks if any errors in the error chain goes by this name
-func IsAnyCauseNamed(errToWalk error, name Name) bool {
-	return walkErrorChain(errToWalk, func(err error) bool {
-		return IsNamed(err, name)
+		return message != ""
 	})
+	return message
 }
 
-// IsRootCauseNamed only returns true if the error at the root of the chain goes by this name
-func IsRootCauseNamed(errToWalk error, name Name) bool {
-	return IsNamed(errors.Cause(errToWalk), name)
+/*
+
+ ErrorCode
+
+*/
+
+type errorCoder interface {
+	ErrorCode() int
 }
 
-// GetTags will return all tags attached to errors in the error chain.
-// A slice of interface{} is a common paramter for structured loggers to accept.
-func GetTags(errToWalk error) []interface{} {
+type withErrorCode struct{
+	error
+	errorCode int
+}
+
+// ErrorCode returns an error code enum that can be checked to identify an error
+func (e *withErrorCode) ErrorCode() int { return e.errorCode }
+
+// Unwrap returns the error that is being wrapped
+func (e *withErrorCode) Unwrap() error { return e.error}
+
+// Error implements the Error interface
+func (e *withErrorCode) Error() string {
+	return fmt.Sprintf("error code %d : ", e.errorCode) + e.Unwrap().Error()
+}
+
+// Format implements the Formatter interface
+func (e *withErrorCode) Format(s fmt.State, verb rune) { format(e, s, verb) }
+
+// WithErrorCode wraps the error with an error code for machines.
+func WithErrorCode(err error, errorCode int) error {
+	if err == nil {
+		return err
+	}
+	return &withErrorCode{
+		error: err,
+		errorCode: errorCode,
+	}
+}
+
+// ErrorCode returns the first (outter most) error code encountered in the error chain.
+// An int enum error code is intended for signaling a specific error state to clients
+// of an API.
+func ErrorCode(errToWalk error) int {
+	errorCode := 0
+	if errToWalk == nil {
+		return errorCode
+	}
+	walkErrorChain(errToWalk, func(err error) bool {
+		if ec, ok := err.(errorCoder); ok {
+			errorCode = ec.ErrorCode()
+		}
+		return errorCode != 0
+	})
+	return errorCode
+}
+
+/*
+
+Http Status
+
+*/
+
+type httpStatuser interface {
+	HttpStatus() int
+}
+
+type withHttpStatus struct{
+	error
+	httpStatus int
+}
+
+// HttpStatus returns an http status code that can be returned to a client
+func (e *withHttpStatus) HttpStatus() int { return e.httpStatus }
+
+// Unwrap returns the error that is being wrapped
+func (e *withHttpStatus) Unwrap() error { return e.error}
+
+// Error implements the Error interface
+func (e *withHttpStatus) Error() string {
+	return fmt.Sprintf("http status %d : ", e.httpStatus) + e.Unwrap().Error()
+}
+
+// Format implements the Formatter interface
+func (e *withHttpStatus) Format(s fmt.State, verb rune) { format(e, s, verb) }
+
+// WithHttpStatus wraps the error with an http status code.
+func WithHttpStatus(err error, status int) error {
+	if err == nil {
+		return err
+	}
+	return &withHttpStatus{
+		error: err,
+		httpStatus: status,
+	}
+}
+
+// HttpStatus returns the first (outter most) error code encountered in the error chain.
+// An int enum error code is intended for signaling a specific error state to clients
+// of an API.
+func HttpStatus(errToWalk error) int {
+	status := 0
+	if errToWalk == nil {
+		return status
+	}
+	walkErrorChain(errToWalk, func(err error) bool {
+		if ws, ok := err.(httpStatuser); ok {
+			status = ws.HttpStatus()
+		}
+		return status != 0
+	})
+	return status
+}
+
+/*
+
+Tags
+
+*/
+
+type tagger interface {
+	Tags() []interface{}
+}
+
+type withTags struct{
+	error
+	keysAndValues []interface{}
+}
+
+// Tags returns the slice of keys and values attached to this error
+func (e *withTags) Tags() []interface{} { return e.keysAndValues }
+
+// Unwrap returns the error that is being wrapped
+func (e *withTags) Unwrap() error { return e.error}
+
+// Error implements the Error interface
+func (e *withTags) Error() string { return e.Unwrap().Error() }
+
+// Format implements the Formatter interface
+func (e *withTags) Format(s fmt.State, verb rune) { format(e, s, verb) }
+
+
+// WithTags wraps an error with a set of key/value tags attached.
+func WithTags(err error, keysAndValues ...interface{}) error {
+	if err == nil {
+		return err
+	}
+	return &withTags{
+		error: err,
+		keysAndValues: keysAndValues,
+	}
+}
+
+// Tags returns all of the tags encountered in the error chain.
+func Tags(errToWalk error) []interface{} {
 	allTags := []interface{}{}
 	walkErrorChain(errToWalk, func(err error) bool {
-		if tagged, ok := err.(tagged); ok {
+		if tagged, ok := err.(tagger); ok {
 			allTags = append(allTags, tagged.Tags()...)
 		}
 		return false
@@ -109,13 +256,13 @@ func GetTags(errToWalk error) []interface{} {
 	return allTags
 }
 
-// GetTagMap will return a map of all tags in the error chain
+// TagMap will return a map of all tags in the error chain
 // this is a best effort, unblanced key pairs will be made even,
 // and duplicate tags overwritten (inner most tag wins)
-func GetTagMap(errToWalk error) map[interface{}]interface{} {
+func TagMap(errToWalk error) map[interface{}]interface{} {
 	allTags := map[interface{}]interface{}{}
 	walkErrorChain(errToWalk, func(err error) bool {
-		if tagged, ok := err.(tagged); ok {
+		if tagged, ok := err.(tagger); ok {
 			tags := tagged.Tags()
 			if len(tags) % 2 != 0{
 				tags = append(tags, "unbalanced tag")
@@ -129,6 +276,25 @@ func GetTagMap(errToWalk error) map[interface{}]interface{} {
 	return allTags
 }
 
+// helper to format a wrapped error
+// compatible with pkg/errors "%+v" convention for stack traces
+func format(err error, s fmt.State, verb rune) {
+	w, ok := err.(wrapper)
+	if !ok {
+		io.WriteString(s, err.Error())
+		return
+	}
+	switch verb {
+	case 'v':
+		if s.Flag('+') {
+			fmt.Fprintf(s, "%+v\n", w.Unwrap())
+		}
+		fallthrough
+	case 's', 'q':
+		io.WriteString(s, err.Error())
+	}
+}
+
 // errorIterator is a function that is intended to be used
 // with a closure to walk the cause chain and collect/check things
 // it should return true to stop walking the chain.
@@ -138,19 +304,18 @@ type errorIterator func(error) bool
 // errorIterator on every error in the chain unless
 // the errorIterator returns true to signal an early return.
 func walkErrorChain(err error, f errorIterator) bool {
-	type causer interface {
-		Unwrap() error
+	if err == nil {
+		return false
 	}
-
 	for err != nil {
 		if f(err) {
 			return true
 		}
-		cause, ok := err.(causer)
+		w, ok := err.(wrapper)
 		if !ok {
 			break
 		}
-		err = cause.Unwrap()
+		err = w.Unwrap()
 	}
 	return f(err)
 }
